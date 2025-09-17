@@ -1,6 +1,9 @@
 import Image from 'next/image';
 import { Star, TrendingUp, Package, AlertCircle } from 'lucide-react';
 import type { Product } from '@/app/lib/search-types';
+import {
+  COLLECTION_NAME,
+} from "@/app/lib/typesense-config";
 
 interface ProductCardProps {
   product: Product;
@@ -14,8 +17,8 @@ export default function ProductCard({ product, showScore = false }: ProductCardP
   const isOnSale = product.sale_price && product.price && product.sale_price < product.price;
   
   return (
-    <div className="bg-white rounded-lg shadow-md hover:shadow-xl transition-shadow p-4 relative" onClick={() => window.open(
-    'https://www.foodservicedirect.ca/' + product.slug, 
+    <div className="bg-white rounded-lg shadow-md hover:shadow-xl transition-shadow p-4 relative cursor-pointer" onClick={() => window.open(
+    COLLECTION_NAME.indexOf('US') ? 'https://www.foodservicedirect.com/' + product.slug : 'https://www.foodservicedirect.ca/' + product.slug, 
     '_blank', 
     'noopener,noreferrer'
   )}>

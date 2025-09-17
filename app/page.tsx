@@ -11,7 +11,8 @@ import {
   Sliders,
   ChevronDown,
   Package,
-  Zap
+  Zap,
+  Loader2
 } from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import ProductCard from './components/ProductCard';
@@ -19,16 +20,6 @@ import PromptChips from './components/PromptChips';
 import CollectionSelector from './components/CollectionSelector';
 import type { Product, SearchResponse, Collection } from './lib/search-types';
 import { SearchStrategy } from './lib/search-types';
-
-const COLLECTIONS: Collection[] = [
-  { id: 'all', name: 'All Products' },
-  { id: 'food', name: 'Food & Beverages' },
-  { id: 'paper', name: 'Paper Products' },
-  { id: 'equipment', name: 'Kitchen Equipment' },
-  { id: 'cleaning', name: 'Cleaning Supplies' },
-  { id: 'disposables', name: 'Disposables' },
-  { id: 'sale', name: 'On Sale' },
-];
 
 export default function SearchPage() {
   const [results, setResults] = useState<Product[]>([]);
@@ -40,14 +31,22 @@ export default function SearchPage() {
   const [searchTime, setSearchTime] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
   const [healthStatus, setHealthStatus] = useState<'checking' | 'healthy' | 'unhealthy'>('checking');
-  const [selectedCollection, setSelectedCollection] = useState<Collection>(COLLECTIONS[0]);
+  
+  // Dynamic collections state
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [selectedCollection, setSelectedCollection] = useState<Collection>({ id: 'all', name: 'All Collections' });
+  const [collectionsLoading, setCollectionsLoading] = useState(true);
+  
   const [searchStrategy, setSearchStrategy] = useState<SearchStrategy | null>(null);
   const [suggestedChips, setSuggestedChips] = useState<string[]>([]);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
-  
-  // Additional advanced parameters
   const [stockPriority, setStockPriority] = useState(true);
   const [relevanceThreshold, setRelevanceThreshold] = useState(0.3);
+
+  // Fetch collections on mount
+  useEffect(() => {
+    fetchCollections();
+  }, []);
 
   // Check health on mount
   useEffect(() => {
@@ -56,6 +55,32 @@ export default function SearchPage() {
       .then(data => setHealthStatus(data.status === 'healthy' ? 'healthy' : 'unhealthy'))
       .catch(() => setHealthStatus('unhealthy'));
   }, []);
+
+  const fetchCollections = async () => {
+    setCollectionsLoading(true);
+    try {
+      const response = await fetch('/api/collections');
+      const data = await response.json();
+      
+      if (data.success && data.collections) {
+        setCollections(data.collections);
+        // Set the first collection (All Collections) as default
+        if (data.collections.length > 0) {
+          setSelectedCollection(data.collections[0]);
+        }
+      } else {
+        console.error('Failed to fetch collections:', data.error);
+        // Fallback to a default collection if fetch fails
+        setCollections([{ id: 'all', name: 'All Collections' }]);
+      }
+    } catch (error) {
+      console.error('Error fetching collections:', error);
+      // Fallback to a default collection if fetch fails
+      setCollections([{ id: 'all', name: 'All Collections' }]);
+    } finally {
+      setCollectionsLoading(false);
+    }
+  };
 
   const handleSearch = useCallback(async (query: string) => {
     if (!query.trim()) return;
@@ -122,6 +147,17 @@ export default function SearchPage() {
     handleSearch(newQuery);
   };
 
+  const handleCollectionChange = (collection: Collection) => {
+    setSelectedCollection(collection);
+    // If we have a search term, re-run the search with the new collection
+    if (searchTerm.trim()) {
+      // Clear results first to show loading state
+      setResults([]);
+      // Re-run search with new collection
+      setTimeout(() => handleSearch(searchTerm), 100);
+    }
+  };
+
   const exampleSearches = [
     'chocolate chip cookies',
     'SKU123456',
@@ -165,11 +201,18 @@ export default function SearchPage() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <h1 className="text-2xl font-bold text-gray-900">Smart Product Search</h1>
-              <CollectionSelector
-                collections={COLLECTIONS}
-                selected={selectedCollection}
-                onChange={setSelectedCollection}
-              />
+              {collectionsLoading ? (
+                <div className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded-lg">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-sm text-gray-600">Loading collections...</span>
+                </div>
+              ) : (
+                <CollectionSelector
+                  collections={collections}
+                  selected={selectedCollection}
+                  onChange={handleCollectionChange}
+                />
+              )}
             </div>
             <div className="flex items-center gap-2">
               <div className={`h-2 w-2 rounded-full ${
@@ -304,6 +347,18 @@ export default function SearchPage() {
                   />
                 </button>
               </div>
+
+              {/* Collection Info */}
+              {selectedCollection.documentsCount !== undefined && (
+                <div className="pt-2 border-t">
+                  <p className="text-xs text-gray-500">
+                    Current collection: <span className="font-medium">{selectedCollection.name}</span>
+                    {selectedCollection.id !== 'all' && (
+                      <> ({selectedCollection.documentsCount.toLocaleString()} documents)</>
+                    )}
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -326,7 +381,7 @@ export default function SearchPage() {
               {searchTime > 0 && (
                 <span>
                   in <strong>{searchTime.toFixed(2)}</strong> seconds
-              </span>
+                </span>
               )}
               {searchStrategy && (
                 <div className="flex items-center gap-1">
@@ -338,7 +393,7 @@ export default function SearchPage() {
               )}
               {selectedCollection.id !== 'all' && (
                 <span>
-                  in <strong>{selectedCollection.name}</strong>
+                  from <strong>{selectedCollection.name}</strong>
                 </span>
               )}
             </div>
@@ -383,7 +438,7 @@ export default function SearchPage() {
               Intelligent Search Ready
             </h3>
             <p className="text-gray-500 mb-4">
-              Our smart search automatically understands product codes, descriptions, and context
+              Search across {collections.length > 0 ? `${collections.length - 1} collection${collections.length > 2 ? 's' : ''}` : 'your collections'}
             </p>
             <div className="flex items-center justify-center gap-6 text-sm text-gray-600">
               <div className="flex items-center gap-2">

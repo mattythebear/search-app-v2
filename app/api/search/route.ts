@@ -1,37 +1,41 @@
 // app/api/search/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { getTypesenseClient, COLLECTION_NAME } from '@/app/lib/typesense-config';
-import { SearchAnalyzer } from '@/app/lib/search-analyzer';
-import type { 
-  Product, 
-  SearchOptions, 
+import { NextRequest, NextResponse } from "next/server";
+import {
+  getTypesenseClient,
+  COLLECTION_NAME,
+} from "@/app/lib/typesense-config";
+import { SearchAnalyzer } from "@/app/lib/search-analyzer";
+import type {
+  Product,
+  SearchOptions,
   SearchResponse,
-  AnalysisResult 
-} from '@/app/lib/search-types';
-import { SearchStrategy } from '@/app/lib/search-types';
+  AnalysisResult,
+} from "@/app/lib/search-types";
+import { SearchStrategy } from "@/app/lib/search-types";
 
 const client = getTypesenseClient();
 const analyzer = new SearchAnalyzer();
-const DEFAULT_LIMIT = parseInt(process.env.DEFAULT_SEARCH_LIMIT || '24');
-const MAX_LIMIT = parseInt(process.env.MAX_SEARCH_LIMIT || '100');
+const DEFAULT_LIMIT = parseInt(process.env.DEFAULT_SEARCH_LIMIT || "24");
+const MAX_LIMIT = parseInt(process.env.MAX_SEARCH_LIMIT || "100");
 
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
-  
+
   try {
     const body = await request.json();
     const options: SearchOptions = {
       ...body,
-      limit: Math.min(body.limit || DEFAULT_LIMIT, MAX_LIMIT)
+      limit: Math.min(body.limit || DEFAULT_LIMIT, MAX_LIMIT),
     };
 
     // Analyze the query to determine search strategy
     const analysis = analyzer.analyze(options.query);
-    console.log('Query analysis:', {
+    console.log("Query analysis:", {
       query: options.query,
       strategy: analysis.strategy,
       confidence: analysis.confidence,
-      identifierType: analysis.identifierType
+      identifierType: analysis.identifierType,
+      collection: options.collection || "default",
     });
 
     let results: Product[] = [];
@@ -63,15 +67,14 @@ export async function POST(request: NextRequest) {
       strategy: analysis.strategy,
       suggestedChips: analysis.suggestedChips,
     } as SearchResponse);
-
   } catch (error: any) {
-    console.error('Search API error:', error);
+    console.error("Search API error:", error);
     return NextResponse.json(
       {
         success: false,
         results: [],
         count: 0,
-        error: error.message
+        error: error.message,
       } as SearchResponse,
       { status: 500 }
     );
@@ -79,304 +82,788 @@ export async function POST(request: NextRequest) {
 }
 
 async function performExactMatchSearch(
-  options: SearchOptions, 
+  options: SearchOptions,
   analysis: AnalysisResult
 ): Promise<Product[]> {
   try {
-    const identifierFields = ['sku', 'mpn', 'gtin', 'upc', 'product_id'];
+    // Determine which collection to search
+    const collectionName =
+      options.collection && options.collection !== "all"
+        ? options.collection
+        : COLLECTION_NAME;
+
+    const identifierFields = ["sku", "mpn", "gtin", "upc", "product_id"];
     const searchQuery = options.query.toUpperCase();
-    
+
     // Build filter for exact match across identifier fields
-    const filterParts = identifierFields.map(field => 
-      `${field}:=${searchQuery}`
-    ).join(' || ');
+    const filterParts = identifierFields
+      .map((field) => `${field}:=${searchQuery}`)
+      .join(" || ");
 
     const searchParams: any = {
-      q: '*',
-      query_by: 'name', // Required field
+      collection: collectionName,
+      q: "*",
+      query_by: "sku,gtin,upc,product_id,mpn",
       filter_by: filterParts,
       per_page: options.limit,
       page: options.page || 1,
-      exclude_fields: 'embedding,embedding_text'
+      exclude_fields: "embedding,embedding_text",
     };
 
-    // Apply collection filter if specified
-    if (options.collection && options.collection !== 'all') {
-      searchParams.filter_by = `(${filterParts}) && collection:=${options.collection}`;
+    // Add any additional filters
+    if (options.filters) {
+      searchParams.filter_by = `(${filterParts}) && ${options.filters}`;
     }
 
-    const searchResult = await client
-      .collections(COLLECTION_NAME)
-      .documents()
-      .search(searchParams);
+    // Use multi_search for consistency
+    const searchRequests = {
+      searches: [searchParams],
+    };
 
-    // If no exact match found, try partial match on SKU/product fields
-    if (!searchResult.hits || searchResult.hits.length === 0) {
-      return performFallbackSearch(options);
+    console.log(
+      `Performing exact match search in collection: ${collectionName}`
+    );
+    const results = await client.multiSearch.perform(searchRequests);
+
+    if (
+      results.results &&
+      results.results[0] &&
+      results.results[0].hits &&
+      results.results[0].hits.length > 0
+    ) {
+      return results.results[0].hits.map((hit: any) => ({
+        ...(hit.document as Product),
+        score: 100, // High score for exact matches
+      }));
     }
 
-    return searchResult.hits?.map(hit => ({
-      ...(hit.document as Product),
-      score: 100, // High score for exact matches
-    })) || [];
+    // If no exact match found, try partial match
+    return performFallbackSearch(options);
   } catch (error) {
-    console.error('Exact match search error:', error);
+    console.error("Exact match search error:", error);
     return performFallbackSearch(options);
   }
 }
 
-async function performKeywordSearch(options: SearchOptions): Promise<Product[]> {
+async function performKeywordSearch(
+  options: SearchOptions
+): Promise<Product[]> {
   try {
+    // Determine which collection to search
+    const collectionName =
+      options.collection && options.collection !== "all"
+        ? options.collection
+        : COLLECTION_NAME;
+
     const searchParams: any = {
-      q: options.query || '*',
-      query_by: 'name,category,description,category_l4,category_l3,category_l2,category_l1,manufacturer,brand,sku',
+      collection: collectionName,
+      q: options.query || "*",
+      query_by:
+        "name,category,description,category_l4,category_l3,category_l2,category_l1,manufacturer,brand,sku",
       sort_by: `is_in_stock:desc,sales_count:desc,_text_match:desc`,
       per_page: options.limit,
       page: options.page || 1,
-      exclude_fields: 'embedding,embedding_text',
+      exclude_fields: "embedding,embedding_text",
       prefix: true,
-      infix: 'fallback',
-      drop_tokens_threshold: 0
+      infix: "fallback",
+      drop_tokens_threshold: 0,
     };
 
-    // Apply collection filter if specified
-    if (options.collection && options.collection !== 'all') {
-      searchParams.filter_by = `collection:=${options.collection}`;
-    }
-
-    // Add any additional filters
+    // Add any additional filters (but not collection as filter since we're searching specific collection)
     if (options.filters) {
-      searchParams.filter_by = searchParams.filter_by 
-        ? `${searchParams.filter_by} && ${options.filters}`
-        : options.filters;
+      searchParams.filter_by = options.filters;
     }
 
-    const searchResult = await client
-      .collections(COLLECTION_NAME)
-      .documents()
-      .search(searchParams);
+    // Use multi_search for consistency
+    const searchRequests = {
+      searches: [searchParams],
+    };
 
-    return processSearchResults(searchResult.hits || [], options.salesBoost || 0.5);
+    console.log(`Performing keyword search in collection: ${collectionName}`);
+    const results = await client.multiSearch.perform(searchRequests);
+
+    if (results.results && results.results[0] && results.results[0].hits) {
+      return processSearchResults(
+        results.results[0].hits,
+        options.salesBoost || 0.5
+      );
+    }
+
+    return [];
   } catch (error) {
-    console.error('Keyword search error:', error);
+    console.error("Keyword search error:", error);
     throw error;
   }
 }
 
-async function performSemanticSearch(options: SearchOptions): Promise<Product[]> {
+// app/api/search/route.ts - Enhanced semantic search functions
+
+async function performSemanticSearch(
+  options: SearchOptions
+): Promise<Product[]> {
   // First check if we have embeddings
   if (!options.queryEmbedding || options.queryEmbedding.length === 0) {
-    console.log('No embedding provided, falling back to keyword search');
+    console.log("No embedding provided, falling back to keyword search");
     return performKeywordSearch(options);
   }
 
   try {
-    // Try hybrid approach - combine keyword and semantic
-    const [keywordResults, semanticResults] = await Promise.allSettled([
-      performKeywordSearch(options),
-      performVectorSearch(options)
-    ]);
+    // Analyze the query for semantic concepts
+    const concepts = extractSemanticConcepts(options.query);
+    console.log("Extracted semantic concepts:", concepts);
 
-    const keyword = keywordResults.status === 'fulfilled' ? keywordResults.value : [];
-    const semantic = semanticResults.status === 'fulfilled' ? semanticResults.value : [];
+    // Perform multiple search strategies
+    const searchPromises = [];
 
-    // Merge results with weighted scoring
-    return mergeSearchResults(keyword, semantic, options.salesBoost || 0.5);
+    // 1. Vector search with full query embedding
+    searchPromises.push(performVectorSearch(options));
+
+    // 2. Enhanced keyword search with concept boosting
+    searchPromises.push(performConceptAwareKeywordSearch(options, concepts));
+
+    // 3. If we have multiple concepts, search for products that match concept combinations
+    if (concepts.dietary.length > 0 && concepts.occasions.length > 0) {
+      searchPromises.push(performConceptCombinationSearch(options, concepts));
+    }
+
+    const results = await Promise.allSettled(searchPromises);
+
+    const vectorResults =
+      results[0].status === "fulfilled" ? results[0].value : [];
+    const keywordResults =
+      results[1].status === "fulfilled" ? results[1].value : [];
+    const conceptResults =
+      results[2]?.status === "fulfilled" ? results[2].value : [];
+
+    // Merge with intelligent weighting based on query type
+    return mergeSemanticResults(
+      vectorResults,
+      keywordResults,
+      conceptResults,
+      concepts,
+      options.salesBoost || 0.5
+    );
   } catch (error) {
-    console.error('Semantic search error:', error);
+    console.error("Enhanced semantic search error:", error);
     return performKeywordSearch(options);
   }
+}
+
+function extractSemanticConcepts(query: string): SemanticConcepts {
+  const queryLower = query.toLowerCase();
+
+  const concepts: SemanticConcepts = {
+    dietary: [],
+    occasions: [],
+    productTypes: [],
+    modifiers: [],
+    traditionalFoods: [],
+  };
+
+  // Dietary restrictions/preferences
+  const dietaryTerms = {
+    vegan: ["plant-based", "dairy-free", "meatless", "animal-free"],
+    vegetarian: ["meat-free", "veggie"],
+    "gluten-free": ["gluten free", "celiac", "wheat-free"],
+    keto: ["low-carb", "ketogenic"],
+    organic: ["natural", "non-gmo"],
+    kosher: ["kosher certified"],
+    halal: ["halal certified"],
+  };
+
+  // Occasions and holidays
+  const occasionTerms = {
+    thanksgiving: ["turkey day", "harvest", "november feast", "fall feast"],
+    christmas: ["xmas", "holiday", "festive", "december"],
+    easter: ["spring holiday", "paschal"],
+    halloween: ["october 31", "trick or treat"],
+    bbq: ["barbecue", "cookout", "grilling"],
+    party: ["celebration", "gathering", "event"],
+  };
+
+  // Traditional foods for occasions
+  const traditionalFoods = {
+    thanksgiving: [
+      "turkey",
+      "stuffing",
+      "gravy",
+      "cranberry sauce",
+      "pumpkin pie",
+      "mashed potatoes",
+      "green bean casserole",
+      "sweet potato",
+      "corn",
+    ],
+    christmas: [
+      "ham",
+      "roast",
+      "cookies",
+      "gingerbread",
+      "eggnog",
+      "candy cane",
+      "fruitcake",
+      "prime rib",
+    ],
+    bbq: [
+      "burgers",
+      "hot dogs",
+      "ribs",
+      "chicken wings",
+      "coleslaw",
+      "potato salad",
+      "corn on the cob",
+    ],
+    easter: ["ham", "lamb", "eggs", "chocolate", "candy", "carrots"],
+  };
+
+  // Extract dietary concepts
+  for (const [key, synonyms] of Object.entries(dietaryTerms)) {
+    if (
+      queryLower.includes(key) ||
+      synonyms.some((syn) => queryLower.includes(syn))
+    ) {
+      concepts.dietary.push(key);
+    }
+  }
+
+  // Extract occasion concepts
+  for (const [key, synonyms] of Object.entries(occasionTerms)) {
+    if (
+      queryLower.includes(key) ||
+      synonyms.some((syn) => queryLower.includes(syn))
+    ) {
+      concepts.occasions.push(key);
+      // Add associated traditional foods
+      if (traditionalFoods[key as keyof typeof traditionalFoods]) {
+        concepts.traditionalFoods.push(
+          ...traditionalFoods[key as keyof typeof traditionalFoods]
+        );
+      }
+    }
+  }
+
+  // Look for action words that indicate intent
+  const intentModifiers = [
+    "options",
+    "alternatives",
+    "substitutes",
+    "ideas",
+    "suggestions",
+  ];
+  concepts.modifiers = intentModifiers.filter((mod) =>
+    queryLower.includes(mod)
+  );
+
+  return concepts;
+}
+
+async function performConceptAwareKeywordSearch(
+  options: SearchOptions,
+  concepts: SemanticConcepts
+): Promise<Product[]> {
+  try {
+    const collectionName =
+      options.collection && options.collection !== "all"
+        ? options.collection
+        : COLLECTION_NAME;
+
+    // Build enhanced query with concept boosting
+    let enhancedQuery = options.query;
+
+    // If looking for dietary alternatives to traditional foods,
+    // include the traditional food names in the search
+    if (concepts.dietary.length > 0 && concepts.traditionalFoods.length > 0) {
+      // Add traditional food terms to help find alternatives
+      const foodTerms = concepts.traditionalFoods.slice(0, 3).join(" ");
+      enhancedQuery = `${options.query} ${foodTerms}`;
+    }
+
+    const searchParams: any = {
+      collection: collectionName,
+      q: enhancedQuery,
+      query_by: "name,category,description,brand,food_properties",
+      // Prioritize products that match both dietary and occasion concepts
+      sort_by: `_text_match:desc,sales_count:desc`,
+      per_page: options.limit || 24,
+      page: options.page || 1,
+      exclude_fields: "embedding,embedding_text",
+      prefix: true,
+      infix: "fallback",
+      drop_tokens_threshold: 0,
+      // Increase weight for name field since product names often contain key terms
+      query_by_weights: "3,1,1,2,2",
+    };
+
+    // Build filters for dietary restrictions if present
+    if (concepts.dietary.length > 0) {
+      const dietaryFilters = concepts.dietary
+        .map((diet) => {
+          switch (diet) {
+            case "vegan":
+              return "(food_properties:vegan || name:vegan || description:plant-based)";
+            case "vegetarian":
+              return "(food_properties:vegetarian || name:vegetarian || name:veggie)";
+            case "gluten-free":
+              return "(food_properties:gluten-free || name:gluten-free)";
+            default:
+              return `food_properties:${diet}`;
+          }
+        })
+        .join(" && ");
+
+      searchParams.filter_by = dietaryFilters;
+    }
+
+    const searchRequests = {
+      searches: [searchParams],
+    };
+
+    const results = await client.multiSearch.perform(searchRequests);
+
+    if (results.results && results.results[0] && results.results[0].hits) {
+      // Post-process to boost products that match concept combinations
+      return postProcessConceptMatches(
+        results.results[0].hits,
+        concepts,
+        options.salesBoost || 0.5
+      );
+    }
+
+    return [];
+  } catch (error) {
+    console.error("Concept-aware keyword search error:", error);
+    return [];
+  }
+}
+
+async function performConceptCombinationSearch(
+  options: SearchOptions,
+  concepts: SemanticConcepts
+): Promise<Product[]> {
+  try {
+    const collectionName =
+      options.collection && options.collection !== "all"
+        ? options.collection
+        : COLLECTION_NAME;
+
+    // Search specifically for products that are alternatives
+    // For example, for "vegan thanksgiving", search for products like "tofurky", "plant-based roast", etc.
+    const alternativeSearchTerms = generateAlternativeSearchTerms(concepts);
+
+    if (alternativeSearchTerms.length === 0) {
+      return [];
+    }
+
+    const searchParams: any = {
+      collection: collectionName,
+      q: alternativeSearchTerms.join(" "),
+      query_by: "name,brand,description",
+      sort_by: `_text_match:desc,sales_count:desc`,
+      per_page: Math.min(options.limit || 24, 10), // Limit these special results
+      exclude_fields: "embedding,embedding_text",
+      prefix: false, // Exact matching for specific products
+      query_by_weights: "3,2,1", // Prioritize name and brand
+    };
+
+    const searchRequests = {
+      searches: [searchParams],
+    };
+
+    const results = await client.multiSearch.perform(searchRequests);
+
+    if (results.results && results.results[0] && results.results[0].hits) {
+      // Boost these results since they're highly relevant concept matches
+      return results.results[0].hits.map((hit: any) => ({
+        ...(hit.document as Product),
+        score: (hit.text_match || 0) * 1.5, // Boost score for concept matches
+        conceptMatch: true,
+      }));
+    }
+
+    return [];
+  } catch (error) {
+    console.error("Concept combination search error:", error);
+    return [];
+  }
+}
+
+function generateAlternativeSearchTerms(concepts: SemanticConcepts): string[] {
+  const terms: string[] = [];
+
+  // Map dietary + occasion to known alternative products
+  const alternativeProducts: { [key: string]: string[] } = {
+    "vegan-thanksgiving": [
+      "tofurky",
+      "plant-based roast",
+      "field roast",
+      "gardein turkey",
+      "vegan stuffing",
+      "mushroom gravy",
+    ],
+    "vegan-christmas": [
+      "vegan ham",
+      "nut roast",
+      "wellington",
+      "plant-based roast",
+    ],
+    "vegan-bbq": [
+      "beyond burger",
+      "impossible burger",
+      "veggie burger",
+      "plant-based sausage",
+      "portobello",
+    ],
+    "vegetarian-thanksgiving": ["quorn roast", "vegetarian turkey", "nut loaf"],
+    "gluten-free-thanksgiving": [
+      "gluten-free stuffing",
+      "rice stuffing",
+      "gluten-free pie",
+    ],
+  };
+
+  // Generate search terms based on concept combinations
+  concepts.dietary.forEach((diet) => {
+    concepts.occasions.forEach((occasion) => {
+      const key = `${diet}-${occasion}`;
+      if (alternativeProducts[key]) {
+        terms.push(...alternativeProducts[key]);
+      }
+    });
+  });
+
+  // Add generic alternative terms
+  if (
+    concepts.dietary.includes("vegan") ||
+    concepts.dietary.includes("vegetarian")
+  ) {
+    terms.push("plant-based", "meat alternative", "dairy-free");
+  }
+
+  return [...new Set(terms)]; // Remove duplicates
+}
+
+function postProcessConceptMatches(
+  hits: any[],
+  concepts: SemanticConcepts,
+  salesBoost: number
+): Product[] {
+  return hits.map((hit) => {
+    const product = hit.document as Product;
+    let score = hit.text_match || 0;
+    let conceptBoost = 1.0;
+
+    const productNameLower = product.name?.toLowerCase() || "";
+    const descriptionLower = product.description?.toLowerCase() || "";
+    const brandLower = product.brand?.toLowerCase() || "";
+    const combined = `${productNameLower} ${descriptionLower} ${brandLower}`;
+
+    // Boost products that match dietary + traditional food combinations
+    if (concepts.dietary.length > 0) {
+      const hasDietaryMatch = concepts.dietary.some(
+        (diet) =>
+          combined.includes(diet) || combined.includes(diet.replace("-", " "))
+      );
+
+      if (hasDietaryMatch) {
+        conceptBoost *= 1.3;
+
+        // Extra boost for products that are alternatives to traditional foods
+        const isAlternative = concepts.traditionalFoods.some((food) => {
+          // Check if this is an alternative version (e.g., "vegan turkey", "plant-based ham")
+          const alternativePatterns = [
+            `${concepts.dietary[0]} ${food}`,
+            `plant-based ${food}`,
+            `meatless ${food}`,
+            `dairy-free ${food}`,
+          ];
+          return alternativePatterns.some((pattern) =>
+            combined.includes(pattern)
+          );
+        });
+
+        if (isAlternative) {
+          conceptBoost *= 1.5; // Strong boost for direct alternatives
+        }
+
+        // Boost known alternative brands
+        const alternativeBrands = [
+          "tofurky",
+          "gardein",
+          "field roast",
+          "beyond",
+          "impossible",
+          "daiya",
+          "quorn",
+        ];
+        if (alternativeBrands.some((brand) => brandLower.includes(brand))) {
+          conceptBoost *= 1.3;
+        }
+      }
+    }
+
+    // Apply occasion-specific boosting
+    if (concepts.occasions.length > 0) {
+      const hasOccasionMatch = concepts.occasions.some((occasion) =>
+        combined.includes(occasion)
+      );
+
+      if (hasOccasionMatch) {
+        conceptBoost *= 1.2;
+      }
+    }
+
+    // Apply sales boost
+    const salesScore = Math.log10((product.sales_count || 0) + 1);
+    const finalScore = score * conceptBoost * (1 + salesScore * salesBoost);
+
+    return {
+      ...product,
+      score: finalScore,
+      conceptBoost: conceptBoost > 1 ? conceptBoost : undefined,
+    };
+  });
+}
+
+function mergeSemanticResults(
+  vectorResults: Product[],
+  keywordResults: Product[],
+  conceptResults: Product[],
+  concepts: SemanticConcepts,
+  salesBoost: number
+): Product[] {
+  const productMap = new Map<string, Product & { sources: Set<string> }>();
+
+  // Helper to add products with source tracking
+  const addProducts = (products: Product[], source: string, weight: number) => {
+    products.forEach((product) => {
+      const existing = productMap.get(product.sku);
+      if (existing) {
+        existing.score = (existing.score || 0) + (product.score || 0) * weight;
+        existing.sources.add(source);
+      } else {
+        productMap.set(product.sku, {
+          ...product,
+          score: (product.score || 0) * weight,
+          sources: new Set([source]),
+        });
+      }
+    });
+  };
+
+  // Weight based on query complexity
+  const hasMultipleConcepts =
+    concepts.dietary.length > 0 && concepts.occasions.length > 0;
+
+  if (hasMultipleConcepts) {
+    // For complex multi-concept queries, prioritize concept matches
+    addProducts(conceptResults, "concept", 0.4);
+    addProducts(keywordResults, "keyword", 0.35);
+    addProducts(vectorResults, "vector", 0.25);
+  } else {
+    // For simpler queries, rely more on vector search
+    addProducts(vectorResults, "vector", 0.5);
+    addProducts(keywordResults, "keyword", 0.35);
+    addProducts(conceptResults, "concept", 0.15);
+  }
+
+  // Boost products that appear in multiple search results
+  productMap.forEach((product) => {
+    if (product.sources.size > 1) {
+      product.score = (product.score || 0) * (1 + 0.1 * product.sources.size);
+    }
+  });
+
+  // Remove sources property and sort
+  const finalResults = Array.from(productMap.values()).map(
+    ({ sources, ...product }) => product
+  );
+
+  return finalResults.sort((a, b) => (b.score || 0) - (a.score || 0));
+}
+
+// Add type definition for semantic concepts
+interface SemanticConcepts {
+  dietary: string[];
+  occasions: string[];
+  productTypes: string[];
+  modifiers: string[];
+  traditionalFoods: string[];
 }
 
 async function performVectorSearch(options: SearchOptions): Promise<Product[]> {
   if (!options.queryEmbedding) return [];
 
   try {
-    console.log('Performing vector search with embedding length:', options.queryEmbedding.length);
-    
-    // First, try with reduced precision to make the embedding smaller
-    const reducedPrecisionEmbedding = options.queryEmbedding.map(v => 
-      Math.round(v * 1000) / 1000  // Keep only 3 decimal places
+    const collectionName =
+      options.collection && options.collection !== "all"
+        ? options.collection
+        : COLLECTION_NAME;
+
+    console.log(
+      `Performing vector search in collection: ${collectionName} with embedding length: ${options.queryEmbedding.length}`
     );
-    
-    // If still too large, truncate to 768 dimensions (usually captures most information)
-    const embedding = reducedPrecisionEmbedding.length > 768 
-      ? reducedPrecisionEmbedding.slice(0, 768)
-      : reducedPrecisionEmbedding;
-    
-    console.log('Using embedding with length:', embedding.length);
-    
-    // Build the vector query string
-    const k = options.limit || 24;
-    const vectorQuery = `embedding:([${embedding.join(',')}], k:${k})`;
-    
+
+    // Option 1: Use string concatenation more efficiently
+    // Instead of joining all at once, build the string in chunks
+    const embedString = options.queryEmbedding
+      .map((v) => v.toFixed(6)) // Use fixed precision to reduce size
+      .join(",");
+
+    // Build the search parameters for multi_search
     const searchParams: any = {
-      q: '*',
-      query_by: 'name',
-      vector_query: vectorQuery,
-      exclude_fields: 'embedding,embedding_text',
-      per_page: k
+      collection: collectionName,
+      q: "*",
+      query_by: "name",
+      // Don't build the vector_query as a string yet
+      exclude_fields: "embedding,embedding_text",
+      per_page: options.limit || 24,
     };
 
-    if (options.collection && options.collection !== 'all') {
-      searchParams.filter_by = `collection:=${options.collection}`;
+    // Add the vector query directly to avoid string building issues
+    searchParams.vector_query = `embedding:([${embedString}], k:${
+      options.limit || 24
+    })`;
+
+    if (options.filters) {
+      searchParams.filter_by = options.filters;
     }
 
-    const searchResult = await client
-      .collections(COLLECTION_NAME)
-      .documents()
-      .search(searchParams);
-
-    return processSearchResults(searchResult.hits || [], options.salesBoost || 0.5);
-    
-  } catch (error: any) {
-    console.error('Vector search failed:', error.message);
-    
-    // If it still fails due to size, try direct API call with POST
-    if (error.message && (error.message.includes('414') || error.message.includes('URI'))) {
-      console.log('Falling back to direct API call with POST...');
-      return performVectorSearchViaAPI(options);
-    }
-    
-    return [];
-  }
-}
-
-async function performVectorSearchViaAPI(options: SearchOptions): Promise<Product[]> {
-  if (!options.queryEmbedding) return [];
-  
-  try {
-    const protocol = process.env.TYPESENSE_PROTOCOL || 'http';
-    const host = process.env.TYPESENSE_HOST || 'localhost';
-    const port = process.env.TYPESENSE_PORT || '8108';
-    const path = process.env.TYPESENSE_PATH || '';
-    const apiKey = process.env.TYPESENSE_API_KEY || '';
-    
-    // Use multi-search endpoint which supports POST with body
-    const url = `${protocol}://${host}:${port}${path}/multi_search`;
-    
-    // Reduce embedding to 768 dimensions for reliability
-    const embedding = options.queryEmbedding.slice(0, 768);
-    
     const searchRequests = {
-      searches: [
-        {
-          collection: COLLECTION_NAME,
-          q: '*',
-          query_by: 'name',
-          vector_query: `embedding:([${embedding.join(',')}], k:${options.limit || 24})`,
-          exclude_fields: 'embedding,embedding_text',
-          per_page: options.limit || 24
-        }
-      ]
+      searches: [searchParams],
     };
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-TYPESENSE-API-KEY': apiKey
-      },
-      body: JSON.stringify(searchRequests)
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Direct API error:', response.status, errorText);
-      throw new Error(`API error: ${response.status}`);
+
+    const results = await client.multiSearch.perform(searchRequests);
+
+    if (results.results && results.results[0] && results.results[0].hits) {
+      return processSearchResults(
+        results.results[0].hits,
+        options.salesBoost || 0.5
+      );
     }
-    
-    const data = await response.json();
-    
-    if (data.results && data.results[0] && data.results[0].hits) {
-      return processSearchResults(data.results[0].hits, options.salesBoost || 0.5);
-    }
-    
+
     return [];
-    
-  } catch (error) {
-    console.error('Direct API vector search failed:', error);
+  } catch (error: any) {
+    console.error("Vector search failed:", error.message);
+
+    // Only truncate as a last resort if the API absolutely can't handle it
+    if (
+      error.message &&
+      error.message.includes("payload") &&
+      options.queryEmbedding.length > 768
+    ) {
+      console.warn(
+        "WARNING: Truncating embeddings due to API limitations - search quality will be degraded"
+      );
+      return performVectorSearch({
+        ...options,
+        queryEmbedding: options.queryEmbedding.slice(0, 768),
+      });
+    }
+
     return [];
   }
 }
 
-async function performFallbackSearch(options: SearchOptions): Promise<Product[]> {
+async function performFallbackSearch(
+  options: SearchOptions
+): Promise<Product[]> {
   try {
+    // Determine which collection to search
+    const collectionName =
+      options.collection && options.collection !== "all"
+        ? options.collection
+        : COLLECTION_NAME;
+
     // Fallback to a more lenient search
     const searchParams: any = {
+      collection: collectionName,
       q: options.query,
-      query_by: 'name,sku,mpn,manufacturer,brand',
+      query_by: "name,sku,mpn,manufacturer,brand",
       prefix: true,
-      infix: 'always',
+      infix: "always",
       per_page: options.limit,
-      page: options.page || 1
+      page: options.page || 1,
+      exclude_fields: "embedding,embedding_text",
     };
 
-    const searchResult = await client
-      .collections(COLLECTION_NAME)
-      .documents()
-      .search(searchParams);
+    // Add any additional filters
+    if (options.filters) {
+      searchParams.filter_by = options.filters;
+    }
 
-    return searchResult.hits?.map(hit => ({
-      ...(hit.document as Product),
-      score: hit.text_match || 0,
-    })) || [];
+    // Use multi_search for consistency
+    const searchRequests = {
+      searches: [searchParams],
+    };
+
+    console.log(`Performing fallback search in collection: ${collectionName}`);
+    const results = await client.multiSearch.perform(searchRequests);
+
+    if (results.results && results.results[0] && results.results[0].hits) {
+      return results.results[0].hits.map((hit: any) => ({
+        ...(hit.document as Product),
+        score: hit.text_match || 0,
+      }));
+    }
+
+    return [];
   } catch (error) {
-    console.error('Fallback search error:', error);
+    console.error("Fallback search error:", error);
     return [];
   }
 }
 
 function processSearchResults(hits: any[], salesBoost: number): Product[] {
-  return hits.map(hit => {
+  return hits.map((hit) => {
     const product = hit.document as Product;
     const baseScore = hit.text_match || hit.vector_distance || 0;
     const salesScore = Math.log10((product.sales_count || 0) + 1);
     const combinedScore = baseScore * (1 + salesScore * salesBoost);
-    
+
     return {
       ...product,
-      score: combinedScore
+      score: combinedScore,
     };
   });
 }
 
 function mergeSearchResults(
-  keyword: Product[], 
-  semantic: Product[], 
+  keyword: Product[],
+  semantic: Product[],
   salesBoost: number
 ): Product[] {
   const productMap = new Map<string, Product>();
-  
+
   // Add keyword results with 40% weight
-  keyword.forEach(product => {
+  keyword.forEach((product) => {
     productMap.set(product.sku, {
       ...product,
-      score: (product.score || 0) * 0.4
+      score: (product.score || 0) * 0.4,
     });
   });
 
   // Add or merge semantic results with 60% weight
-  semantic.forEach(product => {
+  semantic.forEach((product) => {
     const existing = productMap.get(product.sku);
     if (existing) {
-      existing.score = (existing.score || 0) + ((product.score || 0) * 0.6);
+      existing.score = (existing.score || 0) + (product.score || 0) * 0.6;
     } else {
       productMap.set(product.sku, {
         ...product,
-        score: (product.score || 0) * 0.6
+        score: (product.score || 0) * 0.6,
       });
     }
   });
 
   // Apply sales boost to final scores
-  productMap.forEach(product => {
+  productMap.forEach((product) => {
     const salesScore = Math.log10((product.sales_count || 0) + 1);
     product.score = (product.score || 0) * (1 + salesScore * salesBoost);
   });
 
-  return Array.from(productMap.values())
-    .sort((a, b) => (b.score || 0) - (a.score || 0));
+  return Array.from(productMap.values()).sort(
+    (a, b) => (b.score || 0) - (a.score || 0)
+  );
 }
 
 function sortByStockStatus(products: Product[]): Product[] {

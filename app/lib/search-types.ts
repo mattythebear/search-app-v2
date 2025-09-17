@@ -76,7 +76,8 @@ export interface SearchResponse {
 export interface Collection {
   id: string;
   name: string;
-  filter?: string;
+  documentsCount?: number;
+  fields?: number;
 }
 
 export interface SearchParameters {
