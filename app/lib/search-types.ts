@@ -1,3 +1,4 @@
+// app/lib/search-types.ts
 export interface Product {
   id: number;
   sku: string;
@@ -20,16 +21,46 @@ export interface Product {
   score?: number;
   slug?: string;
   vector_distance?: number;
+  mpn?: string;
+  gtin?: string;
+  upc?: string;
+  product_id?: string;
+}
+
+export enum SearchStrategy {
+  EXACT_MATCH = 'exact',
+  SEMANTIC = 'semantic',
+  KEYWORD = 'keyword'
+}
+
+export interface SearchContext {
+  categories: string[];
+  attributes: string[];
+  intents: string[];
+  descriptors: string[];
+  confidence: number;
+  originalQuery: string;
+  unmatchedTokens?: string[];
+}
+
+export interface AnalysisResult {
+  strategy: SearchStrategy;
+  confidence: number;
+  identifierType: string | null;
+  context: SearchContext | null;
+  suggestedChips: string[];
+  queryTerms: string[];
 }
 
 export interface SearchOptions {
   query: string;
   queryEmbedding?: number[];
-  searchType: 'keyword' | 'semantic' | 'hybrid';
   salesBoost: number;
   limit?: number;
   filters?: string;
   page?: number;
+  collection?: string;
+  exactFields?: string[];
 }
 
 export interface SearchResponse {
@@ -37,5 +68,22 @@ export interface SearchResponse {
   results: Product[];
   count: number;
   searchTime?: number;
+  strategy?: SearchStrategy;
+  suggestedChips?: string[];
   error?: string;
+}
+
+export interface Collection {
+  id: string;
+  name: string;
+  filter?: string;
+}
+
+export interface SearchParameters {
+  salesBoost: number;
+  relevanceThreshold: number;
+  stockPriority: boolean;
+  priceConsideration: number;
+  brandBoost: number;
+  recencyFactor: number;
 }

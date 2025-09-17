@@ -1,22 +1,53 @@
+// app/page.tsx
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { Search, Sparkles, Zap, Shuffle, AlertCircle, Info } from 'lucide-react';
+import { 
+  Search, 
+  Sparkles, 
+  AlertCircle, 
+  Info, 
+  TrendingUp,
+  Sliders,
+  ChevronDown,
+  Package,
+  Zap
+} from 'lucide-react';
 import SearchBar from './components/SearchBar';
 import ProductCard from './components/ProductCard';
-import type { Product, SearchResponse } from './lib/search-types';
+import PromptChips from './components/PromptChips';
+import CollectionSelector from './components/CollectionSelector';
+import type { Product, SearchResponse, Collection } from './lib/search-types';
+import { SearchStrategy } from './lib/search-types';
+
+const COLLECTIONS: Collection[] = [
+  { id: 'all', name: 'All Products' },
+  { id: 'food', name: 'Food & Beverages' },
+  { id: 'paper', name: 'Paper Products' },
+  { id: 'equipment', name: 'Kitchen Equipment' },
+  { id: 'cleaning', name: 'Cleaning Supplies' },
+  { id: 'disposables', name: 'Disposables' },
+  { id: 'sale', name: 'On Sale' },
+];
 
 export default function SearchPage() {
   const [results, setResults] = useState<Product[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [searchType, setSearchType] = useState<'keyword' | 'semantic' | 'hybrid'>('hybrid');
   const [salesBoost, setSalesBoost] = useState(0.5);
   const [showScores, setShowScores] = useState(false);
   const [searchTime, setSearchTime] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
   const [healthStatus, setHealthStatus] = useState<'checking' | 'healthy' | 'unhealthy'>('checking');
+  const [selectedCollection, setSelectedCollection] = useState<Collection>(COLLECTIONS[0]);
+  const [searchStrategy, setSearchStrategy] = useState<SearchStrategy | null>(null);
+  const [suggestedChips, setSuggestedChips] = useState<string[]>([]);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  
+  // Additional advanced parameters
+  const [stockPriority, setStockPriority] = useState(true);
+  const [relevanceThreshold, setRelevanceThreshold] = useState(0.3);
 
   // Check health on mount
   useEffect(() => {
@@ -26,12 +57,9 @@ export default function SearchPage() {
       .catch(() => setHealthStatus('unhealthy'));
   }, []);
 
-  // Re-run search if switching search type
-  useEffect(() => {
-    handleSearch(searchTerm);
-  }, [searchType, salesBoost]);
-
   const handleSearch = useCallback(async (query: string) => {
+    if (!query.trim()) return;
+
     setLoading(true);
     setError('');
     setHasSearched(true);
@@ -40,34 +68,33 @@ export default function SearchPage() {
     try {
       let queryEmbedding: number[] | undefined;
 
-      // Generate embedding for semantic/hybrid search
-      if (searchType === 'semantic' || searchType === 'hybrid') {
-        try {
-          const embeddingResponse = await fetch('/api/embeddings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query }),
-          });
+      // Generate embedding for potential semantic search
+      try {
+        const embeddingResponse = await fetch('/api/embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
 
-          if (embeddingResponse.ok) {
-            const embeddingData = await embeddingResponse.json();
-            queryEmbedding = embeddingData.embedding;
-          }
-        } catch (err) {
-          console.error('Failed to generate embedding:', err);
+        if (embeddingResponse.ok) {
+          const embeddingData = await embeddingResponse.json();
+          queryEmbedding = embeddingData.embedding;
         }
+      } catch (err) {
+        console.error('Failed to generate embedding:', err);
       }
 
-      // Perform search
+      // Perform intelligent search
       const searchResponse = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query,
           queryEmbedding,
-          searchType,
           salesBoost,
           limit: 24,
+          collection: selectedCollection.id,
+          filters: stockPriority ? undefined : null
         }),
       });
 
@@ -76,6 +103,8 @@ export default function SearchPage() {
       if (data.success) {
         setResults(data.results);
         setSearchTime(data.searchTime || 0);
+        setSearchStrategy(data.strategy || null);
+        setSuggestedChips(data.suggestedChips || []);
       } else {
         throw new Error(data.error || 'Search failed');
       }
@@ -85,26 +114,62 @@ export default function SearchPage() {
     } finally {
       setLoading(false);
     }
-  }, [searchType, salesBoost]);
+  }, [salesBoost, selectedCollection, stockPriority]);
+
+  const handleChipClick = (chip: string) => {
+    const newQuery = `${searchTerm} ${chip}`.trim();
+    setSearchTerm(newQuery);
+    handleSearch(newQuery);
+  };
 
   const exampleSearches = [
-    'organic snacks',
     'chocolate chip cookies',
-    'gluten free pasta',
+    'SKU123456',
+    'organic pasta',
+    'paper plates bulk',
     'coffee beans',
-    'kitchen equipment',
-    'paper plates',
+    'P-12345',
   ];
+
+  const getStrategyIcon = () => {
+    switch (searchStrategy) {
+      case 'exact':
+        return <Zap className="w-4 h-4 text-blue-600" />;
+      case 'semantic':
+        return <Sparkles className="w-4 h-4 text-purple-600" />;
+      case 'keyword':
+        return <Search className="w-4 h-4 text-green-600" />;
+      default:
+        return null;
+    }
+  };
+
+  const getStrategyLabel = () => {
+    switch (searchStrategy) {
+      case 'exact':
+        return 'Exact Match';
+      case 'semantic':
+        return 'AI Search';
+      case 'keyword':
+        return 'Text Search';
+      default:
+        return '';
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <div className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 py-6">
+        <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">FSD Quick-N-Dirty AI Search Test</h1>
-              <p className="text-gray-600 mt-2">AI-powered semantic search with variable (sales-kitch 24/7) boost vs what we currently have</p>
+            <div className="flex items-center gap-4">
+              <h1 className="text-2xl font-bold text-gray-900">Smart Product Search</h1>
+              <CollectionSelector
+                collections={COLLECTIONS}
+                selected={selectedCollection}
+                onChange={setSelectedCollection}
+              />
             </div>
             <div className="flex items-center gap-2">
               <div className={`h-2 w-2 rounded-full ${
@@ -123,9 +188,13 @@ export default function SearchPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
-        {/* Search Controls */}
+        {/* Search Bar and Examples */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <SearchBar onSearch={handleSearch} onQueryChange={setSearchTerm} loading={loading} />
+          <SearchBar 
+            onSearch={handleSearch} 
+            onQueryChange={setSearchTerm} 
+            loading={loading} 
+          />
           
           {/* Example searches */}
           {!hasSearched && (
@@ -144,120 +213,99 @@ export default function SearchPage() {
               </div>
             </div>
           )}
+
+          {/* Suggested refinements */}
+          {hasSearched && suggestedChips.length > 0 && (
+            <PromptChips 
+              chips={suggestedChips} 
+              onChipClick={handleChipClick} 
+            />
+          )}
         </div>
 
-        {/* Search Settings */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h3 className="text-lg font-semibold mb-4">Search Settings</h3>
+        {/* Advanced Settings */}
+        <div className="bg-white rounded-lg shadow-md mb-6 overflow-hidden">
+          <button
+            onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
+            className="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Sliders className="w-5 h-5 text-gray-600" />
+              <span className="font-semibold text-gray-900">Search Settings</span>
+            </div>
+            <ChevronDown 
+              className={`w-5 h-5 text-gray-600 transition-transform ${
+                showAdvancedSettings ? 'rotate-180' : ''
+              }`} 
+            />
+          </button>
           
-          <div className="space-y-4">
-            {/* Search Type */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Search Type
-              </label>
-              <div className="grid grid-cols-3 gap-2">
+          {showAdvancedSettings && (
+            <div className="px-6 pb-6 space-y-4 border-t">
+              {/* Sales Boost */}
+              <div className="pt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Sales Popularity Weight: {salesBoost.toFixed(1)}x
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={salesBoost}
+                  onChange={(e) => setSalesBoost(parseFloat(e.target.value))}
+                  className="w-full"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  {salesBoost === 0 
+                    ? 'Pure relevance ranking'
+                    : salesBoost < 1 
+                    ? 'Slightly favor popular items'
+                    : salesBoost === 1 
+                    ? 'Balance relevance and popularity'
+                    : 'Strongly favor best-sellers'}
+                </p>
+              </div>
+
+              {/* Stock Priority */}
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-gray-700">
+                  Show Out-of-Stock Items Last
+                </label>
                 <button
-                  onClick={() => setSearchType('keyword')}
-                  className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-                    searchType === 'keyword'
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  onClick={() => setStockPriority(!stockPriority)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    stockPriority ? 'bg-blue-600' : 'bg-gray-200'
                   }`}
                 >
-                  <Search size={16} />
-                  <span className="text-sm">Keyword (Current)</span>
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      stockPriority ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
                 </button>
-                
+              </div>
+
+              {/* Show Scores */}
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-gray-700">
+                  Show Relevance Scores
+                </label>
                 <button
-                  onClick={() => setSearchType('semantic')}
-                  className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-                    searchType === 'semantic'
-                      ? 'bg-green-600 text-white border-green-600'
-                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  onClick={() => setShowScores(!showScores)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    showScores ? 'bg-blue-600' : 'bg-gray-200'
                   }`}
                 >
-                  <Sparkles size={16} />
-                  <span className="text-sm">Semantic (AI overlord)</span>
-                </button>
-                
-                <button
-                  onClick={() => setSearchType('hybrid')}
-                  className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-                    searchType === 'hybrid'
-                      ? 'bg-purple-600 text-white border-purple-600'
-                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <Shuffle size={16} />
-                  <span className="text-sm">Hybrid (Best? or Worst? of both)</span>
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      showScores ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
                 </button>
               </div>
             </div>
-
-            {/* Sales Boost */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Sales Boost: {salesBoost.toFixed(1)}x
-              </label>
-              <input
-                type="range"
-                min="0"
-                max="2"
-                step="0.1"
-                value={salesBoost}
-                onChange={(e) => setSalesBoost(parseFloat(e.target.value))}
-                className="w-full"
-                disabled={searchType === 'keyword'}
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                {searchType === 'keyword' 
-                  ? 'Sales boost is built into keyword search'
-                  : salesBoost === 0 
-                  ? 'Pure relevance ranking'
-                  : salesBoost < 1 
-                  ? 'Slightly favor popular items'
-                  : salesBoost === 1 
-                  ? 'Balance relevance and popularity'
-                  : 'Strongly favor best-sellers'}
-              </p>
-            </div>
-
-            {/* Show Scores */}
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-gray-700">
-                Show Relevance Scores
-              </label>
-              <button
-                onClick={() => setShowScores(!showScores)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  showScores ? 'bg-blue-600' : 'bg-gray-200'
-                }`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    showScores ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-            </div>
-          </div>
-
-          {/* Info Box */}
-          <div className="mt-4 p-3 bg-blue-50 rounded-lg flex gap-2">
-            <Info size={16} className="text-blue-600 mt-0.5 flex-shrink-0" />
-            <p className="text-xs text-blue-700">
-              {searchType === 'keyword' && (
-                <>Traditional text matching on product names, brands, and descriptions. Results sorted by relevance and sales. (remember that Kitch 24/7 get artificial sales boost)</>
-              )}
-              {searchType === 'semantic' && (
-                <>AI-powered understanding using embeddings. Finds conceptually similar products without exact keyword matches.</>
-              )}
-              {searchType === 'hybrid' && (
-                <>Combines keyword and semantic search for an attempt at the best of both worlds. Tries to balance exact matches with conceptual similarity.</>
-              )}
-            </p>
-          </div>
+          )}
         </div>
 
         {/* Error Display */}
@@ -278,11 +326,21 @@ export default function SearchPage() {
               {searchTime > 0 && (
                 <span>
                   in <strong>{searchTime.toFixed(2)}</strong> seconds
+              </span>
+              )}
+              {searchStrategy && (
+                <div className="flex items-center gap-1">
+                  {getStrategyIcon()}
+                  <span>
+                    using <strong>{getStrategyLabel()}</strong>
+                  </span>
+                </div>
+              )}
+              {selectedCollection.id !== 'all' && (
+                <span>
+                  in <strong>{selectedCollection.name}</strong>
                 </span>
               )}
-              <span>
-                using <strong>{searchType}</strong> search
-              </span>
             </div>
           </div>
         )}
@@ -310,23 +368,37 @@ export default function SearchPage() {
           </div>
         ) : hasSearched && !error ? (
           <div className="bg-white rounded-lg shadow-md p-12 text-center">
-            <Search size={48} className="mx-auto text-gray-400 mb-4" />
+            <Package size={48} className="mx-auto text-gray-400 mb-4" />
             <h3 className="text-lg font-semibold text-gray-700 mb-2">
               No results found
             </h3>
             <p className="text-gray-500">
-              Try adjusting your search query or changing the search type
+              Try adjusting your search or selecting a different collection
             </p>
           </div>
         ) : !hasSearched ? (
           <div className="bg-white rounded-lg shadow-md p-12 text-center">
             <Sparkles size={48} className="mx-auto text-gray-400 mb-4" />
             <h3 className="text-lg font-semibold text-gray-700 mb-2">
-              Ready to Search
+              Intelligent Search Ready
             </h3>
-            <p className="text-gray-500">
-              Enter a search query above or try one of the examples
+            <p className="text-gray-500 mb-4">
+              Our smart search automatically understands product codes, descriptions, and context
             </p>
+            <div className="flex items-center justify-center gap-6 text-sm text-gray-600">
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-blue-600" />
+                <span>Exact Match</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-purple-600" />
+                <span>AI Understanding</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Search className="w-4 h-4 text-green-600" />
+                <span>Text Search</span>
+              </div>
+            </div>
           </div>
         ) : null}
       </div>
