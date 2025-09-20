@@ -1,27 +1,29 @@
 import Image from 'next/image';
 import { Star, TrendingUp, Package, AlertCircle } from 'lucide-react';
 import type { Product } from '@/app/lib/search-types';
-import {
-  COLLECTION_NAME,
-} from "@/app/lib/typesense-config";
 
 interface ProductCardProps {
   product: Product;
   showScore?: boolean;
+  collectionName?: string; // Add this prop
 }
 
-export default function ProductCard({ product, showScore = false }: ProductCardProps) {
+export default function ProductCard({ product, showScore = false, collectionName }: ProductCardProps) {
   const displayPrice = product.sale_price || product.price;
   const rating = Math.min(5, Math.max(1, Math.log10((product.sales_count || 0) + 1)));
   const isPopular = (product.sales_count || 0) > 100;
   const isOnSale = product.sale_price && product.price && product.sale_price < product.price;
   
+  // Determine the URL based on collection name
+  const productUrl = collectionName?.includes('US') 
+    ? `https://www.foodservicedirect.com/${product.slug}`
+    : `https://www.foodservicedirect.ca/${product.slug}`;
+  
   return (
-    <div className="bg-white rounded-lg shadow-md hover:shadow-xl transition-shadow p-4 relative cursor-pointer" onClick={() => window.open(
-    COLLECTION_NAME.indexOf('US') ? 'https://www.foodservicedirect.com/' + product.slug : 'https://www.foodservicedirect.ca/' + product.slug, 
-    '_blank', 
-    'noopener,noreferrer'
-  )}>
+    <div 
+      className="bg-white rounded-lg shadow-md hover:shadow-xl transition-shadow p-4 relative cursor-pointer" 
+      onClick={() => window.open(productUrl, '_blank', 'noopener,noreferrer')}
+    >
       {showScore && product.score !== undefined && (
         <div className="absolute top-2 right-2 bg-blue-600 text-white text-xs px-2 py-1 rounded-full z-10">
           Score: {product.score.toFixed(2)}

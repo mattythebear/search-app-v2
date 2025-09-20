@@ -71,6 +71,13 @@ export interface SearchResponse {
   strategy?: SearchStrategy;
   suggestedChips?: string[];
   error?: string;
+  // Add AI analysis info
+  aiAnalysis?: {
+    strategy: string;
+    confidence: number;
+    context: string;
+    suggestedTerms: string[];
+  };
 }
 
 export interface Collection {

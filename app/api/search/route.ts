@@ -28,15 +28,47 @@ export async function POST(request: NextRequest) {
       limit: Math.min(body.limit || DEFAULT_LIMIT, MAX_LIMIT),
     };
 
-    // Analyze the query to determine search strategy
-    const analysis = analyzer.analyze(options.query);
-    console.log("Query analysis:", {
-      query: options.query,
-      strategy: analysis.strategy,
-      confidence: analysis.confidence,
-      identifierType: analysis.identifierType,
-      collection: options.collection || "default",
-    });
+    // Use AI-powered intent analysis instead of local analyzer
+    let analysis: AnalysisResult;
+
+    try {
+      // Call the intent analysis endpoint
+      const intentResponse = await fetch(
+        `${
+          process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"
+        }/api/analyze-intent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: options.query }),
+        }
+      );
+
+      if (intentResponse.ok) {
+        const aiAnalysis = await intentResponse.json();
+
+        // Map AI response to your existing AnalysisResult structure
+        analysis = {
+          strategy: aiAnalysis.strategy as SearchStrategy,
+          confidence: aiAnalysis.confidence,
+          identifierType: aiAnalysis.strategy === "exact" ? "sku" : null,
+          context: aiAnalysis.context,
+          suggestedChips: aiAnalysis.suggestedTerms || [],
+          queryTerms: options.query.toLowerCase().split(/\s+/),
+        };
+
+        console.log("AI-powered query analysis:", {
+          query: options.query,
+          ...aiAnalysis,
+        });
+      } else {
+        throw new Error("Intent analysis failed");
+      }
+    } catch (intentError) {
+      console.error("Falling back to local analyzer:", intentError);
+      // Fallback to your existing local analyzer
+      analysis = analyzer.analyze(options.query);
+    }
 
     let results: Product[] = [];
 
@@ -66,6 +98,12 @@ export async function POST(request: NextRequest) {
       searchTime,
       strategy: analysis.strategy,
       suggestedChips: analysis.suggestedChips,
+      aiAnalysis: {
+        strategy: analysis.strategy,
+        confidence: analysis.confidence,
+        context: analysis.context,
+        suggestedTerms: analysis.suggestedChips,
+      },
     } as SearchResponse);
   } catch (error: any) {
     console.error("Search API error:", error);
@@ -196,8 +234,6 @@ async function performKeywordSearch(
   }
 }
 
-// app/api/search/route.ts - Enhanced semantic search functions
-
 async function performSemanticSearch(
   options: SearchOptions
 ): Promise<Product[]> {
@@ -208,158 +244,28 @@ async function performSemanticSearch(
   }
 
   try {
-    // Analyze the query for semantic concepts
-    const concepts = extractSemanticConcepts(options.query);
-    console.log("Extracted semantic concepts:", concepts);
+    console.log("Performing semantic search with AI-driven understanding");
 
-    // Perform multiple search strategies
-    const searchPromises = [];
+    // Perform vector search
+    const vectorResults = await performVectorSearch(options);
 
-    // 1. Vector search with full query embedding
-    searchPromises.push(performVectorSearch(options));
+    // Perform enhanced keyword search (without concept extraction)
+    const keywordResults = await performEnhancedKeywordSearch(options);
 
-    // 2. Enhanced keyword search with concept boosting
-    searchPromises.push(performConceptAwareKeywordSearch(options, concepts));
-
-    // 3. If we have multiple concepts, search for products that match concept combinations
-    if (concepts.dietary.length > 0 && concepts.occasions.length > 0) {
-      searchPromises.push(performConceptCombinationSearch(options, concepts));
-    }
-
-    const results = await Promise.allSettled(searchPromises);
-
-    const vectorResults =
-      results[0].status === "fulfilled" ? results[0].value : [];
-    const keywordResults =
-      results[1].status === "fulfilled" ? results[1].value : [];
-    const conceptResults =
-      results[2]?.status === "fulfilled" ? results[2].value : [];
-
-    // Merge with intelligent weighting based on query type
+    // Merge results with simple weighting
     return mergeSemanticResults(
       vectorResults,
       keywordResults,
-      conceptResults,
-      concepts,
       options.salesBoost || 0.5
     );
   } catch (error) {
-    console.error("Enhanced semantic search error:", error);
+    console.error("Semantic search error:", error);
     return performKeywordSearch(options);
   }
 }
 
-function extractSemanticConcepts(query: string): SemanticConcepts {
-  const queryLower = query.toLowerCase();
-
-  const concepts: SemanticConcepts = {
-    dietary: [],
-    occasions: [],
-    productTypes: [],
-    modifiers: [],
-    traditionalFoods: [],
-  };
-
-  // Dietary restrictions/preferences
-  const dietaryTerms = {
-    vegan: ["plant-based", "dairy-free", "meatless", "animal-free"],
-    vegetarian: ["meat-free", "veggie"],
-    "gluten-free": ["gluten free", "celiac", "wheat-free"],
-    keto: ["low-carb", "ketogenic"],
-    organic: ["natural", "non-gmo"],
-    kosher: ["kosher certified"],
-    halal: ["halal certified"],
-  };
-
-  // Occasions and holidays
-  const occasionTerms = {
-    thanksgiving: ["turkey day", "harvest", "november feast", "fall feast"],
-    christmas: ["xmas", "holiday", "festive", "december"],
-    easter: ["spring holiday", "paschal"],
-    halloween: ["october 31", "trick or treat"],
-    bbq: ["barbecue", "cookout", "grilling"],
-    party: ["celebration", "gathering", "event"],
-  };
-
-  // Traditional foods for occasions
-  const traditionalFoods = {
-    thanksgiving: [
-      "turkey",
-      "stuffing",
-      "gravy",
-      "cranberry sauce",
-      "pumpkin pie",
-      "mashed potatoes",
-      "green bean casserole",
-      "sweet potato",
-      "corn",
-    ],
-    christmas: [
-      "ham",
-      "roast",
-      "cookies",
-      "gingerbread",
-      "eggnog",
-      "candy cane",
-      "fruitcake",
-      "prime rib",
-    ],
-    bbq: [
-      "burgers",
-      "hot dogs",
-      "ribs",
-      "chicken wings",
-      "coleslaw",
-      "potato salad",
-      "corn on the cob",
-    ],
-    easter: ["ham", "lamb", "eggs", "chocolate", "candy", "carrots"],
-  };
-
-  // Extract dietary concepts
-  for (const [key, synonyms] of Object.entries(dietaryTerms)) {
-    if (
-      queryLower.includes(key) ||
-      synonyms.some((syn) => queryLower.includes(syn))
-    ) {
-      concepts.dietary.push(key);
-    }
-  }
-
-  // Extract occasion concepts
-  for (const [key, synonyms] of Object.entries(occasionTerms)) {
-    if (
-      queryLower.includes(key) ||
-      synonyms.some((syn) => queryLower.includes(syn))
-    ) {
-      concepts.occasions.push(key);
-      // Add associated traditional foods
-      if (traditionalFoods[key as keyof typeof traditionalFoods]) {
-        concepts.traditionalFoods.push(
-          ...traditionalFoods[key as keyof typeof traditionalFoods]
-        );
-      }
-    }
-  }
-
-  // Look for action words that indicate intent
-  const intentModifiers = [
-    "options",
-    "alternatives",
-    "substitutes",
-    "ideas",
-    "suggestions",
-  ];
-  concepts.modifiers = intentModifiers.filter((mod) =>
-    queryLower.includes(mod)
-  );
-
-  return concepts;
-}
-
-async function performConceptAwareKeywordSearch(
-  options: SearchOptions,
-  concepts: SemanticConcepts
+async function performEnhancedKeywordSearch(
+  options: SearchOptions
 ): Promise<Product[]> {
   try {
     const collectionName =
@@ -367,22 +273,10 @@ async function performConceptAwareKeywordSearch(
         ? options.collection
         : COLLECTION_NAME;
 
-    // Build enhanced query with concept boosting
-    let enhancedQuery = options.query;
-
-    // If looking for dietary alternatives to traditional foods,
-    // include the traditional food names in the search
-    if (concepts.dietary.length > 0 && concepts.traditionalFoods.length > 0) {
-      // Add traditional food terms to help find alternatives
-      const foodTerms = concepts.traditionalFoods.slice(0, 3).join(" ");
-      enhancedQuery = `${options.query} ${foodTerms}`;
-    }
-
     const searchParams: any = {
       collection: collectionName,
-      q: enhancedQuery,
-      query_by: "name,category,description,brand,food_properties",
-      // Prioritize products that match both dietary and occasion concepts
+      q: options.query,
+      query_by: "name,category,description,brand,manufacturer",
       sort_by: `_text_match:desc,sales_count:desc`,
       per_page: options.limit || 24,
       page: options.page || 1,
@@ -390,28 +284,12 @@ async function performConceptAwareKeywordSearch(
       prefix: true,
       infix: "fallback",
       drop_tokens_threshold: 0,
-      // Increase weight for name field since product names often contain key terms
-      query_by_weights: "3,1,1,2,2",
+      query_by_weights: "3,1,1,2,2", // Prioritize name and brand
     };
 
-    // Build filters for dietary restrictions if present
-    if (concepts.dietary.length > 0) {
-      const dietaryFilters = concepts.dietary
-        .map((diet) => {
-          switch (diet) {
-            case "vegan":
-              return "(food_properties:vegan || name:vegan || description:plant-based)";
-            case "vegetarian":
-              return "(food_properties:vegetarian || name:vegetarian || name:veggie)";
-            case "gluten-free":
-              return "(food_properties:gluten-free || name:gluten-free)";
-            default:
-              return `food_properties:${diet}`;
-          }
-        })
-        .join(" && ");
-
-      searchParams.filter_by = dietaryFilters;
+    // Add any filters
+    if (options.filters) {
+      searchParams.filter_by = options.filters;
     }
 
     const searchRequests = {
@@ -421,214 +299,22 @@ async function performConceptAwareKeywordSearch(
     const results = await client.multiSearch.perform(searchRequests);
 
     if (results.results && results.results[0] && results.results[0].hits) {
-      // Post-process to boost products that match concept combinations
-      return postProcessConceptMatches(
+      return processSearchResults(
         results.results[0].hits,
-        concepts,
         options.salesBoost || 0.5
       );
     }
 
     return [];
   } catch (error) {
-    console.error("Concept-aware keyword search error:", error);
+    console.error("Enhanced keyword search error:", error);
     return [];
   }
-}
-
-async function performConceptCombinationSearch(
-  options: SearchOptions,
-  concepts: SemanticConcepts
-): Promise<Product[]> {
-  try {
-    const collectionName =
-      options.collection && options.collection !== "all"
-        ? options.collection
-        : COLLECTION_NAME;
-
-    // Search specifically for products that are alternatives
-    // For example, for "vegan thanksgiving", search for products like "tofurky", "plant-based roast", etc.
-    const alternativeSearchTerms = generateAlternativeSearchTerms(concepts);
-
-    if (alternativeSearchTerms.length === 0) {
-      return [];
-    }
-
-    const searchParams: any = {
-      collection: collectionName,
-      q: alternativeSearchTerms.join(" "),
-      query_by: "name,brand,description",
-      sort_by: `_text_match:desc,sales_count:desc`,
-      per_page: Math.min(options.limit || 24, 10), // Limit these special results
-      exclude_fields: "embedding,embedding_text",
-      prefix: false, // Exact matching for specific products
-      query_by_weights: "3,2,1", // Prioritize name and brand
-    };
-
-    const searchRequests = {
-      searches: [searchParams],
-    };
-
-    const results = await client.multiSearch.perform(searchRequests);
-
-    if (results.results && results.results[0] && results.results[0].hits) {
-      // Boost these results since they're highly relevant concept matches
-      return results.results[0].hits.map((hit: any) => ({
-        ...(hit.document as Product),
-        score: (hit.text_match || 0) * 1.5, // Boost score for concept matches
-        conceptMatch: true,
-      }));
-    }
-
-    return [];
-  } catch (error) {
-    console.error("Concept combination search error:", error);
-    return [];
-  }
-}
-
-function generateAlternativeSearchTerms(concepts: SemanticConcepts): string[] {
-  const terms: string[] = [];
-
-  // Map dietary + occasion to known alternative products
-  const alternativeProducts: { [key: string]: string[] } = {
-    "vegan-thanksgiving": [
-      "tofurky",
-      "plant-based roast",
-      "field roast",
-      "gardein turkey",
-      "vegan stuffing",
-      "mushroom gravy",
-    ],
-    "vegan-christmas": [
-      "vegan ham",
-      "nut roast",
-      "wellington",
-      "plant-based roast",
-    ],
-    "vegan-bbq": [
-      "beyond burger",
-      "impossible burger",
-      "veggie burger",
-      "plant-based sausage",
-      "portobello",
-    ],
-    "vegetarian-thanksgiving": ["quorn roast", "vegetarian turkey", "nut loaf"],
-    "gluten-free-thanksgiving": [
-      "gluten-free stuffing",
-      "rice stuffing",
-      "gluten-free pie",
-    ],
-  };
-
-  // Generate search terms based on concept combinations
-  concepts.dietary.forEach((diet) => {
-    concepts.occasions.forEach((occasion) => {
-      const key = `${diet}-${occasion}`;
-      if (alternativeProducts[key]) {
-        terms.push(...alternativeProducts[key]);
-      }
-    });
-  });
-
-  // Add generic alternative terms
-  if (
-    concepts.dietary.includes("vegan") ||
-    concepts.dietary.includes("vegetarian")
-  ) {
-    terms.push("plant-based", "meat alternative", "dairy-free");
-  }
-
-  return [...new Set(terms)]; // Remove duplicates
-}
-
-function postProcessConceptMatches(
-  hits: any[],
-  concepts: SemanticConcepts,
-  salesBoost: number
-): Product[] {
-  return hits.map((hit) => {
-    const product = hit.document as Product;
-    let score = hit.text_match || 0;
-    let conceptBoost = 1.0;
-
-    const productNameLower = product.name?.toLowerCase() || "";
-    const descriptionLower = product.description?.toLowerCase() || "";
-    const brandLower = product.brand?.toLowerCase() || "";
-    const combined = `${productNameLower} ${descriptionLower} ${brandLower}`;
-
-    // Boost products that match dietary + traditional food combinations
-    if (concepts.dietary.length > 0) {
-      const hasDietaryMatch = concepts.dietary.some(
-        (diet) =>
-          combined.includes(diet) || combined.includes(diet.replace("-", " "))
-      );
-
-      if (hasDietaryMatch) {
-        conceptBoost *= 1.3;
-
-        // Extra boost for products that are alternatives to traditional foods
-        const isAlternative = concepts.traditionalFoods.some((food) => {
-          // Check if this is an alternative version (e.g., "vegan turkey", "plant-based ham")
-          const alternativePatterns = [
-            `${concepts.dietary[0]} ${food}`,
-            `plant-based ${food}`,
-            `meatless ${food}`,
-            `dairy-free ${food}`,
-          ];
-          return alternativePatterns.some((pattern) =>
-            combined.includes(pattern)
-          );
-        });
-
-        if (isAlternative) {
-          conceptBoost *= 1.5; // Strong boost for direct alternatives
-        }
-
-        // Boost known alternative brands
-        const alternativeBrands = [
-          "tofurky",
-          "gardein",
-          "field roast",
-          "beyond",
-          "impossible",
-          "daiya",
-          "quorn",
-        ];
-        if (alternativeBrands.some((brand) => brandLower.includes(brand))) {
-          conceptBoost *= 1.3;
-        }
-      }
-    }
-
-    // Apply occasion-specific boosting
-    if (concepts.occasions.length > 0) {
-      const hasOccasionMatch = concepts.occasions.some((occasion) =>
-        combined.includes(occasion)
-      );
-
-      if (hasOccasionMatch) {
-        conceptBoost *= 1.2;
-      }
-    }
-
-    // Apply sales boost
-    const salesScore = Math.log10((product.sales_count || 0) + 1);
-    const finalScore = score * conceptBoost * (1 + salesScore * salesBoost);
-
-    return {
-      ...product,
-      score: finalScore,
-      conceptBoost: conceptBoost > 1 ? conceptBoost : undefined,
-    };
-  });
 }
 
 function mergeSemanticResults(
   vectorResults: Product[],
   keywordResults: Product[],
-  conceptResults: Product[],
-  concepts: SemanticConcepts,
   salesBoost: number
 ): Product[] {
   const productMap = new Map<string, Product & { sources: Set<string> }>();
@@ -650,26 +336,14 @@ function mergeSemanticResults(
     });
   };
 
-  // Weight based on query complexity
-  const hasMultipleConcepts =
-    concepts.dietary.length > 0 && concepts.occasions.length > 0;
-
-  if (hasMultipleConcepts) {
-    // For complex multi-concept queries, prioritize concept matches
-    addProducts(conceptResults, "concept", 0.4);
-    addProducts(keywordResults, "keyword", 0.35);
-    addProducts(vectorResults, "vector", 0.25);
-  } else {
-    // For simpler queries, rely more on vector search
-    addProducts(vectorResults, "vector", 0.5);
-    addProducts(keywordResults, "keyword", 0.35);
-    addProducts(conceptResults, "concept", 0.15);
-  }
+  // Simple weighting: 60% vector, 40% keyword
+  addProducts(vectorResults, "vector", 0.6);
+  addProducts(keywordResults, "keyword", 0.4);
 
   // Boost products that appear in multiple search results
   productMap.forEach((product) => {
     if (product.sources.size > 1) {
-      product.score = (product.score || 0) * (1 + 0.1 * product.sources.size);
+      product.score = (product.score || 0) * 1.2; // 20% boost for appearing in both
     }
   });
 
@@ -679,15 +353,6 @@ function mergeSemanticResults(
   );
 
   return finalResults.sort((a, b) => (b.score || 0) - (a.score || 0));
-}
-
-// Add type definition for semantic concepts
-interface SemanticConcepts {
-  dietary: string[];
-  occasions: string[];
-  productTypes: string[];
-  modifiers: string[];
-  traditionalFoods: string[];
 }
 
 async function performVectorSearch(options: SearchOptions): Promise<Product[]> {
