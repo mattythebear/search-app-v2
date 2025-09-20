@@ -91,20 +91,25 @@ export async function POST(request: NextRequest) {
 
     const searchTime = (Date.now() - startTime) / 1000;
 
-    return NextResponse.json({
+    const response: SearchResponse = {
       success: true,
       results,
       count: results.length,
       searchTime,
       strategy: analysis.strategy,
       suggestedChips: analysis.suggestedChips,
-      aiAnalysis: {
-        strategy: analysis.strategy,
+    };
+
+    if (analysis.context) {
+      response.aiAnalysis = {
+        strategy: analysis.strategy as string,
         confidence: analysis.confidence,
         context: analysis.context,
         suggestedTerms: analysis.suggestedChips,
-      },
-    } as SearchResponse);
+      };
+    }
+
+    return NextResponse.json(response);
   } catch (error: any) {
     console.error("Search API error:", error);
     return NextResponse.json(
@@ -166,10 +171,10 @@ async function performExactMatchSearch(
     if (
       results.results &&
       results.results[0] &&
-      results.results[0].hits &&
-      results.results[0].hits.length > 0
+      (results.results[0] as any).hits &&
+      (results.results[0] as any).hits.length > 0
     ) {
-      return results.results[0].hits.map((hit: any) => ({
+      return (results.results[0] as any).hits.map((hit: any) => ({
         ...(hit.document as Product),
         score: 100, // High score for exact matches
       }));
@@ -220,9 +225,9 @@ async function performKeywordSearch(
     console.log(`Performing keyword search in collection: ${collectionName}`);
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && results.results[0].hits) {
+    if (results.results && results.results[0] && (results.results[0] as any).hits) {
       return processSearchResults(
-        results.results[0].hits,
+        (results.results[0] as any).hits,
         options.salesBoost || 0.5
       );
     }
@@ -298,9 +303,9 @@ async function performEnhancedKeywordSearch(
 
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && results.results[0].hits) {
+    if (results.results && results.results[0] && (results.results[0] as any).hits) {
       return processSearchResults(
-        results.results[0].hits,
+        (results.results[0] as any).hits,
         options.salesBoost || 0.5
       );
     }
@@ -399,9 +404,9 @@ async function performVectorSearch(options: SearchOptions): Promise<Product[]> {
 
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && results.results[0].hits) {
+    if (results.results && results.results[0] && (results.results[0] as any).hits) {
       return processSearchResults(
-        results.results[0].hits,
+        (results.results[0] as any).hits,
         options.salesBoost || 0.5
       );
     }
@@ -464,8 +469,8 @@ async function performFallbackSearch(
     console.log(`Performing fallback search in collection: ${collectionName}`);
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && results.results[0].hits) {
-      return results.results[0].hits.map((hit: any) => ({
+    if (results.results && results.results[0] && (results.results[0] as any).hits) {
+      return (results.results[0] as any).hits.map((hit: any) => ({
         ...(hit.document as Product),
         score: hit.text_match || 0,
       }));

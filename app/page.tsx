@@ -142,19 +142,11 @@ export default function SearchPage() {
           setSearchTime(data.searchTime || 0);
           setSearchStrategy(data.strategy || null);
           setSuggestedChips(data.suggestedChips || []);
-          setAiAnalysis(data.aiAnalysis || null); // Add this line
+          setAiAnalysis(data.aiAnalysis || null);
         } else {
           throw new Error(data.error || "Search failed");
         }
 
-        if (data.success) {
-          setResults(data.results);
-          setSearchTime(data.searchTime || 0);
-          setSearchStrategy(data.strategy || null);
-          setSuggestedChips(data.suggestedChips || []);
-        } else {
-          throw new Error(data.error || "Search failed");
-        }
       } catch (err: any) {
         setError(err.message || "Search failed");
         setResults([]);

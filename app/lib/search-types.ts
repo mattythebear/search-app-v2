@@ -75,7 +75,7 @@ export interface SearchResponse {
   aiAnalysis?: {
     strategy: string;
     confidence: number;
-    context: string;
+    context: any;
     suggestedTerms: string[];
   };
 }
