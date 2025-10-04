@@ -21,6 +21,7 @@ import PromptChips from "./components/PromptChips";
 import CollectionSelector from "./components/CollectionSelector";
 import type { Product, SearchResponse, Collection } from "./lib/search-types";
 import { SearchStrategy } from "./lib/search-types";
+import FloatingVoiceButton from './components/FloatingVoiceButton';
 
 export default function SearchPage() {
   const [results, setResults] = useState<Product[]>([]);
@@ -265,6 +266,7 @@ export default function SearchPage() {
             onQueryChange={setSearchTerm}
             loading={loading}
           />
+          <FloatingVoiceButton onSearch={handleSearch} />
 
           {/* Example searches */}
           {!hasSearched && (
