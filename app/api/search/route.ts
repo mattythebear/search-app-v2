@@ -6,6 +6,7 @@ import {
 } from "@/app/lib/typesense-config";
 import { SearchAnalyzer } from "@/app/lib/search-analyzer";
 import type {
+  ExtractedFilters,
   Product,
   SearchOptions,
   SearchResponse,
@@ -18,6 +19,7 @@ const analyzer = new SearchAnalyzer();
 const DEFAULT_LIMIT = parseInt(process.env.DEFAULT_SEARCH_LIMIT || "24");
 const MAX_LIMIT = parseInt(process.env.MAX_SEARCH_LIMIT || "100");
 
+// Update your POST handler
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
 
@@ -28,15 +30,14 @@ export async function POST(request: NextRequest) {
       limit: Math.min(body.limit || DEFAULT_LIMIT, MAX_LIMIT),
     };
 
-    // Use AI-powered intent analysis instead of local analyzer
     let analysis: AnalysisResult;
+    let extractedFilters: ExtractedFilters = {};
+    let cleanQuery = options.query;
 
     try {
       // Call the intent analysis endpoint
       const intentResponse = await fetch(
-        `${
-          process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"
-        }/api/analyze-intent`,
+        `${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/analyze-intent`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -46,19 +47,24 @@ export async function POST(request: NextRequest) {
 
       if (intentResponse.ok) {
         const aiAnalysis = await intentResponse.json();
+        
+        // Extract filters from AI analysis
+        extractedFilters = aiAnalysis.filters || {};
+        cleanQuery = aiAnalysis.cleanQuery || options.query;
 
-        // Map AI response to your existing AnalysisResult structure
         analysis = {
           strategy: aiAnalysis.strategy as SearchStrategy,
           confidence: aiAnalysis.confidence,
           identifierType: aiAnalysis.strategy === "exact" ? "sku" : null,
           context: aiAnalysis.context,
           suggestedChips: aiAnalysis.suggestedTerms || [],
-          queryTerms: options.query.toLowerCase().split(/\s+/),
+          queryTerms: cleanQuery.toLowerCase().split(/\s+/),
         };
 
         console.log("AI-powered query analysis:", {
-          query: options.query,
+          originalQuery: options.query,
+          cleanQuery,
+          extractedFilters,
           ...aiAnalysis,
         });
       } else {
@@ -66,23 +72,37 @@ export async function POST(request: NextRequest) {
       }
     } catch (intentError) {
       console.error("Falling back to local analyzer:", intentError);
-      // Fallback to your existing local analyzer
       analysis = analyzer.analyze(options.query);
     }
+
+    // Build the filter string
+    const filterString = buildFilterString(
+      extractedFilters,
+      options.filters,
+      options.stockPriority
+    );
+
+    // Create updated options with clean query and filters
+    const searchOptions: SearchOptions = {
+      ...options,
+      query: cleanQuery,
+      filters: filterString, // This is the correct variable name
+      extractedFilters, // Pass along for response
+    };
 
     let results: Product[] = [];
 
     // Execute search based on determined strategy
     switch (analysis.strategy) {
       case SearchStrategy.EXACT_MATCH:
-        results = await performExactMatchSearch(options, analysis);
+        results = await performExactMatchSearch(searchOptions, analysis);
         break;
       case SearchStrategy.SEMANTIC:
-        results = await performSemanticSearch(options);
+        results = await performSemanticSearch(searchOptions);
         break;
       case SearchStrategy.KEYWORD:
       default:
-        results = await performKeywordSearch(options);
+        results = await performKeywordSearch(searchOptions);
         break;
     }
 
@@ -98,6 +118,7 @@ export async function POST(request: NextRequest) {
       searchTime,
       strategy: analysis.strategy,
       suggestedChips: analysis.suggestedChips,
+      appliedFilters: extractedFilters, // Include what filters were applied
     };
 
     if (analysis.context) {
@@ -106,6 +127,7 @@ export async function POST(request: NextRequest) {
         confidence: analysis.confidence,
         context: analysis.context,
         suggestedTerms: analysis.suggestedChips,
+        extractedFilters,
       };
     }
 
@@ -192,7 +214,6 @@ async function performKeywordSearch(
   options: SearchOptions
 ): Promise<Product[]> {
   try {
-    // Determine which collection to search
     const collectionName =
       options.collection && options.collection !== "all"
         ? options.collection
@@ -212,26 +233,33 @@ async function performKeywordSearch(
       drop_tokens_threshold: 0,
     };
 
-    // Add any additional filters (but not collection as filter since we're searching specific collection)
+    // IMPORTANT: Apply the filters
     if (options.filters) {
       searchParams.filter_by = options.filters;
+      console.log("Applying filters to keyword search:", options.filters);
     }
 
-    // Use multi_search for consistency
     const searchRequests = {
       searches: [searchParams],
     };
 
-    console.log(`Performing keyword search in collection: ${collectionName}`);
+    console.log(
+      `Performing keyword search in collection: ${collectionName} with params:`,
+      searchParams
+    );
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && (results.results[0] as any).hits) {
-      return processSearchResults(
-        (results.results[0] as any).hits,
-        options.salesBoost || 0.5
-      );
+    if (
+      results.results &&
+      results.results[0] &&
+      (results.results[0] as any).hits
+    ) {
+      const hits = (results.results[0] as any).hits;
+      console.log(`Found ${hits.length} results`);
+      return processSearchResults(hits, options.salesBoost || 0.5);
     }
 
+    console.log("No results found");
     return [];
   } catch (error) {
     console.error("Keyword search error:", error);
@@ -303,7 +331,11 @@ async function performEnhancedKeywordSearch(
 
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && (results.results[0] as any).hits) {
+    if (
+      results.results &&
+      results.results[0] &&
+      (results.results[0] as any).hits
+    ) {
       return processSearchResults(
         (results.results[0] as any).hits,
         options.salesBoost || 0.5
@@ -404,7 +436,11 @@ async function performVectorSearch(options: SearchOptions): Promise<Product[]> {
 
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && (results.results[0] as any).hits) {
+    if (
+      results.results &&
+      results.results[0] &&
+      (results.results[0] as any).hits
+    ) {
       return processSearchResults(
         (results.results[0] as any).hits,
         options.salesBoost || 0.5
@@ -469,7 +505,11 @@ async function performFallbackSearch(
     console.log(`Performing fallback search in collection: ${collectionName}`);
     const results = await client.multiSearch.perform(searchRequests);
 
-    if (results.results && results.results[0] && (results.results[0] as any).hits) {
+    if (
+      results.results &&
+      results.results[0] &&
+      (results.results[0] as any).hits
+    ) {
       return (results.results[0] as any).hits.map((hit: any) => ({
         ...(hit.document as Product),
         score: hit.text_match || 0,
@@ -545,4 +585,67 @@ function sortByStockStatus(products: Product[]): Product[] {
     // Then by score
     return (b.score || 0) - (a.score || 0);
   });
+}
+
+// Add this helper function
+function buildFilterString(
+  extractedFilters: ExtractedFilters | undefined,
+  existingFilters?: string,
+  stockPriority?: boolean
+): string {
+  const filterParts: string[] = [];
+
+  if (extractedFilters) {
+    // Price filters
+    if (extractedFilters.minPrice !== undefined) {
+      filterParts.push(`price:>=${extractedFilters.minPrice}`);
+    }
+    if (extractedFilters.maxPrice !== undefined) {
+      filterParts.push(`price:<=${extractedFilters.maxPrice}`);
+    }
+
+    // Brand filter
+    if (extractedFilters.brand) {
+      filterParts.push(`brand:=${extractedFilters.brand}`);
+    }
+
+    // Category filter
+    if (extractedFilters.category) {
+      // Could match against any category level
+      filterParts.push(
+        `(category:=${extractedFilters.category} || category_l1:=${extractedFilters.category} || category_l2:=${extractedFilters.category} || category_l3:=${extractedFilters.category} || category_l4:=${extractedFilters.category})`
+      );
+    }
+
+    // Stock filter
+    if (extractedFilters.inStock) {
+      filterParts.push(`is_in_stock:=true`);
+    }
+
+    // Sale filter
+    if (extractedFilters.onSale) {
+      filterParts.push(`sale_price:>0`);
+    }
+
+    // Attribute filters (e.g., organic, gluten-free)
+    if (extractedFilters.attributes && extractedFilters.attributes.length > 0) {
+      // Assuming these would be in food_properties or attributes field
+      const attrFilters = extractedFilters.attributes
+        .map((attr) => `food_properties:*${attr}*`)
+        .join(" && ");
+      if (attrFilters) filterParts.push(`(${attrFilters})`);
+    }
+  }
+
+  // Add stock priority if enabled
+  if (stockPriority && !extractedFilters?.inStock) {
+    filterParts.push(`is_in_stock:=true`);
+  }
+
+  // Combine with existing filters
+  if (existingFilters) {
+    filterParts.push(existingFilters);
+  }
+
+  return filterParts.join(" && ");
 }

@@ -52,15 +52,27 @@ export interface AnalysisResult {
   queryTerms: string[];
 }
 
+export interface ExtractedFilters {
+  minPrice?: number;
+  maxPrice?: number;
+  brand?: string;
+  category?: string;
+  inStock?: boolean;
+  onSale?: boolean;
+  attributes?: string[]; // For things like "organic", "gluten-free"
+}
+
 export interface SearchOptions {
   query: string;
   queryEmbedding?: number[];
   salesBoost: number;
   limit?: number;
   filters?: string;
+  extractedFilters?: ExtractedFilters; // Add this
   page?: number;
   collection?: string;
   exactFields?: string[];
+  stockPriority?: boolean;
 }
 
 export interface SearchResponse {
@@ -71,12 +83,14 @@ export interface SearchResponse {
   strategy?: SearchStrategy;
   suggestedChips?: string[];
   error?: string;
+  appliedFilters?: ExtractedFilters; // Add this
   // Add AI analysis info
   aiAnalysis?: {
     strategy: string;
     confidence: number;
     context: any;
     suggestedTerms: string[];
+    extractedFilters?: ExtractedFilters;
   };
 }
 

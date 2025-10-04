@@ -13,6 +13,7 @@ import {
   Package,
   Zap,
   Loader2,
+  Filter,
 } from "lucide-react";
 import SearchBar from "./components/SearchBar";
 import ProductCard from "./components/ProductCard";
@@ -34,6 +35,7 @@ export default function SearchPage() {
     "checking" | "healthy" | "unhealthy"
   >("checking");
   const [showAIDetails, setShowAIDetails] = useState(true);
+  const [appliedFilters, setAppliedFilters] = useState<any>({});
 
   // Dynamic collections state
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -136,17 +138,16 @@ export default function SearchPage() {
         });
 
         const data: SearchResponse = await searchResponse.json();
-
         if (data.success) {
           setResults(data.results);
           setSearchTime(data.searchTime || 0);
           setSearchStrategy(data.strategy || null);
           setSuggestedChips(data.suggestedChips || []);
           setAiAnalysis(data.aiAnalysis || null);
+          setAppliedFilters(data.appliedFilters || {}); // Add this
         } else {
           throw new Error(data.error || "Search failed");
         }
-
       } catch (err: any) {
         setError(err.message || "Search failed");
         setResults([]);
@@ -519,6 +520,53 @@ export default function SearchPage() {
             )}
           </div>
         )}
+
+        {hasSearched &&
+          !loading &&
+          !error &&
+          Object.keys(appliedFilters).length > 0 && (
+            <div className="bg-green-50 rounded-lg shadow-sm p-4 mb-6 border border-green-200">
+              <div className="flex items-center gap-2 mb-2">
+                <Filter className="w-5 h-5 text-green-600" />
+                <h3 className="font-semibold text-green-900">Active Filters</h3>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {appliedFilters.minPrice && (
+                  <span className="px-3 py-1 bg-white text-sm text-green-700 rounded-full border border-green-300">
+                    Min: ${appliedFilters.minPrice}
+                  </span>
+                )}
+                {appliedFilters.maxPrice && (
+                  <span className="px-3 py-1 bg-white text-sm text-green-700 rounded-full border border-green-300">
+                    Max: ${appliedFilters.maxPrice}
+                  </span>
+                )}
+                {appliedFilters.brand && (
+                  <span className="px-3 py-1 bg-white text-sm text-green-700 rounded-full border border-green-300">
+                    Brand: {appliedFilters.brand}
+                  </span>
+                )}
+                {appliedFilters.inStock && (
+                  <span className="px-3 py-1 bg-white text-sm text-green-700 rounded-full border border-green-300">
+                    In Stock Only
+                  </span>
+                )}
+                {appliedFilters.onSale && (
+                  <span className="px-3 py-1 bg-white text-sm text-green-700 rounded-full border border-green-300">
+                    On Sale
+                  </span>
+                )}
+                {appliedFilters.attributes?.map((attr: string, idx: number) => (
+                  <span
+                    key={idx}
+                    className="px-3 py-1 bg-white text-sm text-green-700 rounded-full border border-green-300"
+                  >
+                    {attr}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
         {/* Results Grid */}
         {loading ? (

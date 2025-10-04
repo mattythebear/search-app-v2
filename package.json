@@ -3,9 +3,9 @@
   "version": "2.0.0",
   "description": "AI-powered product search with semantic understanding",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3005",
     "build": "next build",
-    "start": "next start -p 3002",
+    "start": "next start -p 3005",
     "lint": "next lint"
   },
   "dependencies": {

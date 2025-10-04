@@ -1,83 +1,105 @@
-import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
+import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
 export async function POST(request: NextRequest) {
+  const { query } = await request.json();
   try {
-    const { query } = await request.json();
-
-    if (!query || typeof query !== 'string') {
-      return NextResponse.json(
-        { error: 'Invalid query' },
-        { status: 400 }
-      );
+    if (!query || typeof query !== "string") {
+      return NextResponse.json({ error: "Invalid query" }, { status: 400 });
     }
 
-    // Use GPT to analyze the search intent
     const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo", // Faster and cheaper for intent analysis
+      model: "gpt-3.5-turbo",
       messages: [
         {
           role: "system",
           content: `You are a search intent analyzer for a food service/restaurant supply website. 
-          Analyze the user's search query and return a JSON response with:
-          - strategy: "exact" (for SKU/product IDs), "semantic" (for conceptual queries), or "keyword" (for simple product name searches)
-          - confidence: 0-1 score of your confidence in the strategy
-          - context: extracted context about the search
-          - suggestedTerms: additional search terms that might help
-          
-          Return ONLY valid JSON, no additional text.`
+      Analyze the user's search query and return a JSON response with:
+      - strategy: "exact" (ONLY for SKU/product IDs like "SKU123456"), "semantic" (for conceptual queries), or "keyword" (for product name searches)
+      - confidence: 0-1 score
+      - context: extracted context about the search
+      - suggestedTerms: additional search terms
+      - filters: extracted filters including price ranges
+      - cleanQuery: the search query with filter terms removed
+      
+      IMPORTANT: Only use "exact" strategy for actual product codes/SKUs that look like identifiers (e.g., "SKU123456", "P-12345", alphanumeric codes).
+      For product names like "cookie dough", "paper plates", etc., use "keyword" or "semantic" strategy.
+      
+      Extract price filters from phrases like:
+      - "under $X", "less than $X", "below $X" → maxPrice: X
+      - "over $X", "above $X", "more than $X" → minPrice: X
+      - "between $X and $Y", "$X-$Y" → minPrice: X, maxPrice: Y
+      - "around $X", "about $X" → minPrice: X*0.8, maxPrice: X*1.2
+      
+      Also extract other filters:
+      - Brand mentions → brand
+      - Category mentions → category
+      - Stock requirements ("in stock", "available") → inStock: true
+      - Special flags ("on sale", "discounted") → onSale: true
+      
+      Return ONLY valid JSON.`,
         },
         {
           role: "user",
-          content: `Analyze this search query: "${query}"
-          
-          Consider:
-          - Is this looking for specific products by name/ID or asking a conceptual question?
-          - Does it need understanding of relationships (like "healthy alternatives to X")?
-          - Are they asking about use cases, occasions, or dietary needs?
-          - Would semantic search better understand their intent?
-          
-          Examples:
-          - "SKU123456" -> exact match
-          - "paper plates" -> keyword search  
-          - "healthy frying oils" -> semantic (needs understanding of "healthy" in context)
-          - "vegan thanksgiving options" -> semantic (needs conceptual matching)
-          - "what can I use for outdoor catering" -> semantic (needs understanding)`
-        }
+          content: `Analyze this query: "${query}"
+      
+      Remember:
+      - "cookie dough" is a product name, NOT a product ID → use "keyword" or "semantic"
+      - Only use "exact" for things that look like codes: "SKU123", "P-4567", etc.
+      
+      Extract:
+      1. Price constraints (under/over/between amounts)
+      2. Brand names if mentioned
+      3. Categories if mentioned
+      4. Stock/availability requirements
+      5. The core search terms (with filter words removed)
+      
+      Example response for "cookie dough under $100":
+      {
+        "strategy": "keyword",
+        "confidence": 0.9,
+        "context": "User looking for cookie dough products with price constraint",
+        "suggestedTerms": ["chocolate chip", "sugar cookie", "edible"],
+        "filters": {
+          "maxPrice": 100
+        },
+        "cleanQuery": "cookie dough"
+      }`,
+        },
       ],
-      temperature: 0.3, // Lower temperature for more consistent analysis
-      max_tokens: 200,
+      temperature: 0.3,
+      max_tokens: 300,
     });
 
     const response = completion.choices[0].message.content;
-    
-    // Parse the JSON response
+
     try {
-      const analysis = JSON.parse(response || '{}');
+      const analysis = JSON.parse(response || "{}");
       return NextResponse.json(analysis);
     } catch (parseError) {
-      console.error('Failed to parse GPT response:', response);
-      // Fallback to keyword search if parsing fails
+      console.error("Failed to parse GPT response:", response);
       return NextResponse.json({
-        strategy: 'keyword',
+        strategy: "keyword",
         confidence: 0.5,
-        context: { error: 'Failed to parse AI analysis' },
-        suggestedTerms: []
+        context: { error: "Failed to parse AI analysis" },
+        suggestedTerms: [],
+        filters: {},
+        cleanQuery: query,
       });
     }
-
   } catch (error: any) {
-    console.error('Error analyzing intent:', error);
-    // Fallback to keyword search on error
+    console.error("Error analyzing intent:", error);
     return NextResponse.json({
-      strategy: 'keyword',
+      strategy: "keyword",
       confidence: 0.5,
       context: { error: error.message },
-      suggestedTerms: []
+      suggestedTerms: [],
+      filters: {},
+      cleanQuery: query,
     });
   }
 }
